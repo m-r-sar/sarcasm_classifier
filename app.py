@@ -71,7 +71,7 @@ model, tfidf, scaler = load_and_train_model()
 st.title("Предиктор сарказму")
 
 caption_input = st.text_area("Текст 1:",)
-ocr_input = st.text_area("Текст 2: ")
+ocr_input = st.text_area("Текст 2(з картинки): ")
 
 if st.button("Predict", type="primary"):
     if not caption_input and not ocr_input:
