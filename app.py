@@ -42,7 +42,7 @@ def extract_linguistic_features(caption, ocr):
 
 @st.cache_resource
 def load_and_train_model():
-    df = pd.read_excel(r'C:\Users\rodio\PycharmProjects\DataMining\sarcasm-classifier\sarcastic-classifier.xlsx')
+    df = pd.read_excel(r'sarcastic-classifier.xlsx')
     df['caption_text'] = df['caption_text'].fillna('')
     df['image_text'] = df['image_text'].fillna('')
 
