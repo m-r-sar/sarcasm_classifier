@@ -4,3 +4,4 @@ numpy
 textblob
 scikit-learn
 scipy
+openpyxl
