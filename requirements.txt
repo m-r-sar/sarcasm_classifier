@@ -1,7 +1,4 @@
 streamlit
 pandas
-numpy
-textblob
-scikit-learn
-scipy
-openpyxl
+joblib
+easyocr
