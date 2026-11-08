@@ -1,106 +1,109 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import re
+import easyocr
+import joblib
 from textblob import TextBlob
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
-from scipy.sparse import hstack
 
 st.set_page_config(page_title="Предиктор Сарказму", layout="centered")
+
+
+@st.cache_resource
+def load_ocr_model():
+    return easyocr.Reader(['en'], gpu=False)
+
+
+@st.cache_resource
+def load_ml_pipeline():
+    return joblib.load('sarcasm_model_pipeline.pkl')
 
 
 def extract_linguistic_features(caption, ocr):
     caption = str(caption)
     ocr = str(ocr)
 
-    len_caption = len(caption)
-    len_ocr = len(ocr)
-
-    caps_caption = sum(1 for c in caption if c.isupper())
-    caps_ocr = sum(1 for c in ocr if c.isupper())
-
-    punct_caption = len(re.findall(r'[!?]', caption))
-    punct_ocr = len(re.findall(r'[!?]', ocr))
-
     sentiment_caption = TextBlob(caption).sentiment.polarity
     sentiment_ocr = TextBlob(ocr).sentiment.polarity
 
-    sentiment_diff = abs(sentiment_caption - sentiment_ocr)
-
-    sarcasm_markers = r'\b(wow|sure|great|thanks|yeah|right|literally|totally)\b'
-    markers_caption = len(re.findall(sarcasm_markers, caption.lower()))
-    markers_ocr = len(re.findall(sarcasm_markers, ocr.lower()))
-
-    return [
-        len_caption, len_ocr, caps_caption, caps_ocr,
-        punct_caption, punct_ocr, sentiment_caption,
-        sentiment_ocr, sentiment_diff, markers_caption, markers_ocr
-    ]
-
-
-@st.cache_resource
-def load_and_train_model():
-    df = pd.read_excel(r'sarcastic-classifier.xlsx')
-    df['caption_text'] = df['caption_text'].fillna('')
-    df['image_text'] = df['image_text'].fillna('')
-
-    features_list = df.apply(lambda row: extract_linguistic_features(row['caption_text'], row['image_text']), axis=1)
-    features_df = pd.DataFrame(features_list.tolist())
-
-    scaler = StandardScaler()
-    numerical_features = scaler.fit_transform(features_df)
-
-    df['combined_text'] = df['caption_text'] + " " + df['image_text']
-    tfidf = TfidfVectorizer(max_features=1000, stop_words='english', ngram_range=(1, 2))
-    text_features = tfidf.fit_transform(df['combined_text'])
-
-    X = hstack([text_features, numerical_features])
-    y = df['is_sarcastic']
+    return {
+        'len_caption': len(caption),
+        'len_ocr': len(ocr),
+        'caps_caption': len(re.findall('[A-Z]', caption)),
+        'caps_ocr': len(re.findall('[A-Z]', ocr)),
+        'punct_caption': len(re.findall(r'[!?]', caption)),
+        'punct_ocr': len(re.findall(r'[!?]', ocr)),
+        'sentiment_caption': sentiment_caption,
+        'sentiment_ocr': sentiment_ocr,
+        'sentiment_diff': abs(sentiment_caption - sentiment_ocr),
+        'markers_caption': len(re.findall(r'\b(wow|sure|great|thanks|yeah|right|literally|totally)\b', caption.lower())),
+        'markers_ocr': len(re.findall(r'\b(wow|sure|great|thanks|yeah|right|literally|totally)\b', ocr.lower()))
+    }
 
 
-    model = LogisticRegression(class_weight='balanced', max_iter=1000, random_state=42)
-    model.fit(X, y)
+pipeline = load_ml_pipeline()
+ocr_reader = load_ocr_model()
 
-    return model, tfidf, scaler
-
-
-model, tfidf, scaler = load_and_train_model()
+if "text_1" not in st.session_state:
+    st.session_state["text_1"] = ""
+if "text_2" not in st.session_state:
+    st.session_state["text_2"] = ""
+if "last_processed_file" not in st.session_state:
+    st.session_state["last_processed_file"] = None
 
 st.title("Предиктор сарказму")
 
-caption_input = st.text_area("Текст 1:",)
-ocr_input = st.text_area("Текст 2(з картинки): ")
+uploaded_file = st.file_uploader("Завантажте картинку для автоматичного розпізнавання", type=["png", "jpg", "jpeg"])
+
+if uploaded_file is not None and uploaded_file.name != st.session_state["last_processed_file"]:
+    with st.spinner("Розпізнавання тексту..."):
+        image_bytes = uploaded_file.read()
+        results = ocr_reader.readtext(image_bytes)
+
+        top_texts, bottom_texts = [], []
+        if results:
+            max_y = max([bbox[2][1] for bbox, text, prob in results])
+            split_y = max_y * 0.4
+
+            for bbox, text, prob in results:
+                center_y = (bbox[0][1] + bbox[2][1]) / 2
+                if center_y <= split_y:
+                    top_texts.append(text)
+                else:
+                    bottom_texts.append(text)
+
+        st.session_state["text_1"] = " ".join(top_texts)
+        st.session_state["text_2"] = " ".join(bottom_texts)
+        st.session_state["last_processed_file"] = uploaded_file.name
+        st.rerun()
+
+caption_input = st.text_area("Текст 1 (Підпис/Верх):", key="text_1")
+ocr_input = st.text_area("Текст 2 (Мем/Низ):", key="text_2")
 
 if st.button("Predict", type="primary"):
     if not caption_input and not ocr_input:
         st.warning("Текст потрібен хоча б в одному з полів")
     else:
-        ling_features = extract_linguistic_features(caption_input, ocr_input)
-        scaled_features = scaler.transform([ling_features])
+        features_dict = extract_linguistic_features(caption_input, ocr_input)
+        features_dict['combined_text'] = f"{caption_input} {ocr_input}"
 
-        combined_text = f"{caption_input} {ocr_input}"
-        text_vec = tfidf.transform([combined_text])
+        X_input = pd.DataFrame([features_dict])
 
-        X_input = hstack([text_vec, scaled_features])
-
-        prediction = model.predict(X_input)[0]
-        probabilities = model.predict_proba(X_input)[0]
-
-        confidence = probabilities[prediction] * 100
+        prediction = pipeline.predict(X_input)[0]
+        probabilities = pipeline.predict_proba(X_input)[0]
+        confidence = probabilities[1] * 100 if prediction == 1 else probabilities[0] * 100
 
         st.divider()
         if prediction == 1:
-            st.error("**Результат: Це сарказм!**")
+            st.error("**Результат: Це сарказм**")
         else:
-            st.success("**Результат: Це НЕ сарказм.**")
+            st.success("**Результат: Це НЕ сарказм**")
 
         st.metric(label="Упевненість моделі", value=f"{confidence:.1f}%")
         st.progress(int(confidence))
 
         with st.expander("Переглянути параметри цього тексту"):
-            st.write(f"- Тональність тексту 1: {ling_features[6]:.2f}")
-            st.write(f"- Тональність тексту 2: {ling_features[7]:.2f}")
-            st.write(f"- Різниця тональностей: **{ling_features[8]:.2f}**")
-            st.write(f"Модель використовує не тільки сам конфлікт тональностей тому ці показники іноді можуть не сходитися з результатом")
+            st.write(f"- Тональність тексту 1: {features_dict['sentiment_caption']:.2f}")
+            st.write(f"- Тональність тексту 2: {features_dict['sentiment_ocr']:.2f}")
+            st.write(f"- Різниця тональностей: **{features_dict['sentiment_diff']:.2f}**")
+            st.write(
+                "Модель використовує не тільки сам конфлікт тональностей, тому ці показники іноді можуть не сходитися з результатом")
